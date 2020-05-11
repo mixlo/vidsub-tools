@@ -21,13 +21,14 @@ SUPP_VID_EXTS = [".avi", ".mp4", ".mkv", ".m4v"]
 SUPP_SUB_EXTS = [".srt", ".sub", ".ass"]
 """Defines all subtitle file formats that are supported for renaming."""
 
-UNSUPP_FN_CHARS = ["/", "\\", ":", "*", "?", "\"", "<", ">", "|", "†"]
-"""Defines all characters that are unsupported in filenames. The '†' character 
-is technically a valid filename character, but has a special meaning on the 
-Wikipedia pages of denoting particularly long episodes. Since it is very 
-unlikely that any episode names of any show actually contains that character, 
-it is included as an unsupported character to make sure it is removed from 
-episode names scraped from Wikipedia."""
+UNSUPP_FN_CHARS = ["/", "\\", ":", "*", "?", "\"", "<", ">", "|", "†", "‡"]
+"""Defines all characters that are unsupported in filenames. The '†' and '‡' 
+characters are technically valid filename characters, but have special 
+meanings on the Wikipedia pages of denoting particularly long episodes and 
+double episodes, respectively. Since it is very unlikely that any episode 
+names of any show actually contains those characters, it is included as an 
+unsupported character to make sure it is removed from episode names scraped 
+from Wikipedia."""
 
 
 def sanitise_fn(fn):
@@ -97,19 +98,17 @@ def match_XxY(vid_files):
     return None
 
 
-def guess_link(dir):
-    """Uses the video files in the specified directory to guess the Wikipedia 
-    link to the correct series and season, where the episode names can be 
-    found.
+def match_show_snum(dir):
+    """Uses the video files in the specified directory to match out the show's 
+    name and season number.
     
     :param dir: The directory in which to look for video files.
-    :raises AssertionError: Raised if the name of the video file on which the 
-        guess is based is of a format such that a valid guess can't be 
-        performed.
-    :return: The guessed Wikipedia link.
-    :rtype: string
+    :raises AssertionError: Raised if the name of the video files on which to 
+        perform the match are of a format such that a valid match can't be 
+        made.
+    :return: The matched show name and season number.
+    :rtype: (string, int) tuple
     """
-    # Match functions should return two strings, show name and season number
     match_funcs = [match_sXeY, match_XxY]
     vid_files = get_vid_files(dir)
     
@@ -126,37 +125,138 @@ def guess_link(dir):
     
     s_num = int(matched_season)
     assert s_num >= 1
+
+    return s_name, s_num
+
+
+def guess_link(dir, s_name=None, s_num=None, sngl=False):
+    """Uses the video files in the specified directory to guess the Wikipedia 
+    link to the correct series and season, where the episode names can be 
+    found.
     
-    link_fstr = "https://en.wikipedia.org/wiki/{}_(season_{})"
-    link = link_fstr.format(s_name.replace(" ", "_"), s_num)
+    :param dir: The directory in which to look for video files.
+    :param s_name: The show name (optional, an attempt to match it from the 
+        filenames it will be made if not specified).
+    :param s_num: The season number (optional, an attempt to match it from the 
+        filenames it will be made if not specified).
+    :param sngl: Denoting that the show only has one season (it's needed since 
+        the link to the Wikipedia page has a different structure then).
+    :raises AssertionError: Raised if the name of the video file on which the 
+        guess is based is of a format such that a valid guess can't be 
+        performed.
+    :return: The guessed Wikipedia link along with the show name and season 
+        number matched from filenames (if not specified).
+    :rtype: (string, string, int) tuple
+    """
+    # Match functions should return two strings, show name and season number
+    if None in (s_name, s_num):
+        s_name, s_num = match_show_snum(dir)
+    
+    if sngl:
+        link_fstr = "https://en.wikipedia.org/wiki/{}"
+        link = link_fstr.format(s_name.replace(" ", "_"))
+    else:
+        link_fstr = "https://en.wikipedia.org/wiki/{}_(season_{})"
+        link = link_fstr.format(s_name.replace(" ", "_"), s_num)
+        
     assert requests.get(link).status_code == 200
-    
-    return link
+    return link, s_name, s_num
 
 
-def try_guess_link(dir):
+def try_guess_link(dir, s_name=None, s_num=None, sngl=False):
     """Uses the :func:`guess_link` function to guess the Wikipedia link, 
     catching any raised errors.
     
     :param dir: The directory in which to look for video files.
-    :return: The guessed Wikipedia link, or None if an error is raised.
-    :rtype: string
+    :param s_name: The show name (optional, an attempt to match it from the 
+        filenames it will be made if not specified).
+    :param s_num: The season number (optional, an attempt to match it from the 
+        filenames it will be made if not specified).
+    :param sngl: Denoting that the show only has one season (it's needed since 
+        the link to the Wikipedia page has a different structure then).
+    :return: The guessed Wikipedia link, or None if an error is raised, along 
+        with the show name and season number matched from filenames (if not 
+        specified).
+    :rtype: (string, string, int) tuple
     """
     try:
         print("\nGuessing link to show...")
-        link = guess_link(dir)
+        link, s_name, s_num = guess_link(dir, s_name, s_num, sngl)
         print("Guessed link: {}".format(link))
-        return link
+        return link, s_name, s_num
     except:
-        return None
+        return None, s_name, s_num
 
 
-def get_show_info(link):
+def scrape_show_snum(soup, sngl=False):
+    """Scrapes the show name and season number from a specified HTML page, in 
+    the form of a specified :class:`bs4.BeautifulSoup` object. 
+    
+    :param soup: A :class:`bs4.BeautifulSoup` object containing the HTML of 
+        the Wikipedia page to be scraped.
+    :param sngl: Denoting that the show only has one season (it's needed since 
+        the Wikipedia page has a different structure then).
+    :raises AssertionError: Raised if the HTML of the Wikipedia page is of an 
+        unexpected format and can't be parsed correctly.
+    :return: The scraped show name and season number.
+    :rtype: (string, int) tuple
+    """
+    sel_title = "body > div#content > h1#firstHeading"
+    title_html = soup.select(sel_title)[0].decode_contents()
+    
+    if sngl:
+        tit = re.match("^<i>(.*?)</i>$", title_html, re.IGNORECASE)
+        s_name, s_num = tit.group(1), 1
+    else:
+        tit = re.match("^<i>(.*?)</i>.*?(\d+).*?$", title_html, re.IGNORECASE)
+        s_name, s_num = tit.group(1), int(tit.group(2))
+    
+    assert s_name
+    return s_name, s_num
+
+
+def scrape_eps(soup, sngl=False):
+    """Scrapes all episode names and numbers from a specified HTML page, in 
+    the form of a specified :class:`bs4.BeautifulSoup` object. 
+    
+    :param soup: A :class:`bs4.BeautifulSoup` object containing the HTML of 
+        the Wikipedia page to be scraped.
+    :param sngl: Denoting that the show only has one season (it's needed since 
+        the Wikipedia page has a different structure then).
+    :raises AssertionError: Raised if the HTML of the Wikipedia page is of an 
+        unexpected format and can't be parsed correctly.
+    :return: The scraped episode names and numbers.
+    :rtype: (string list, string list) tuple
+    """
+    # Have to take double episodes into account, which make it impossible to 
+    # simply enumerate e_names to get e_nums, hence scraping episode numbers.
+    if sngl:
+        e_nums_sel = "table.wikiepisodetable tr.vevent > th"
+    else:
+        e_nums_sel = "table.wikiepisodetable tr.vevent > td:first-of-type"
+        
+    e_nums_html = [el.decode_contents() for el in soup.select(e_nums_sel)]
+    e_nums = [re.sub("<hr/?>", " ", el).split() for el in e_nums_html]
+    
+    e_names_sel = "table.wikiepisodetable tr.vevent > td.summary"
+    e_names = [el.text.strip('"') for el in soup.select(e_names_sel)]
+    
+    assert len(e_nums) == len(e_names)
+    return e_nums, e_names
+
+
+def get_show_info(link, s_name=None, s_num=None, sngl=False):
     """Uses the :mod:`requests` and :mod:`bs4` modules to fetch and scrape the 
     HTML of the series' season's Wikipedia page for the necessary information 
     about the show.
     
     :param link: The link to the series' season's Wikipedia page.
+    :param s_name: The show name (optional, an attempt to scrape it will be 
+        made if not specified).
+    :param s_num: The season number (optional, an attempt to scrape it will be 
+        made if not specified).
+    :param sngl: Denoting that the show only has one season (it's needed since 
+        the Wikipedia page has a different structure then).
     :raises AssertionError: Raised if the HTML of the Wikipedia page is of an 
         unexpected format and can't be parsed correctly.
     :return: The name and number of the season, along with the numbers and 
@@ -166,35 +266,31 @@ def get_show_info(link):
     page = requests.get(link)
     soup = bs4.BeautifulSoup(page.content, "html.parser")
     
-    sel_title = "body > div#content > h1#firstHeading"
-    title_html = soup.select(sel_title)[0].decode_contents()
-    title = re.match("^<i>(.*?)</i>.*?(\d+).*?$", title_html, re.IGNORECASE)
+    if None in (s_name, s_num):
+        s_name, s_num = scrape_show_snum(soup, sngl)
     
-    s_name, s_num = title.group(1), int(title.group(2))
-    assert s_name
+    e_nums, e_names = scrape_eps(soup, sngl)
     
-    e_nums_sel = "table.wikiepisodetable tr.vevent > td:first-of-type"
-    e_nums_html = [el.decode_contents() for el in soup.select(e_nums_sel)]
-    e_nums = [re.sub("<hr/?>", " ", el).split() for el in e_nums_html]
-    
-    e_names_sel = "table.wikiepisodetable tr.vevent > td.summary"
-    e_names = [el.text.strip('"') for el in soup.select(e_names_sel)]
-    
-    assert len(e_nums) == len(e_names)
     return s_name, s_num, e_nums, e_names
 
 
-def try_get_show_info(link):
+def try_get_show_info(link, s_name=None, s_num=None, sngl=False):
     """Uses the :func:`get_show_info` function to get the necessary 
     information about the series' season and episodes, catching any raised 
     errors.
     
     :param dir: The link to the series' season's Wikipedia page.
+    :param s_name: The show name (optional, an attempt to scrape it will be 
+        made if not specified).
+    :param s_num: The season number (optional, an attempt to scrape it will be 
+        made if not specified).
+    :param sngl: Denoting that the show only has one season (it's needed since 
+        the Wikipedia page has a different structure then).
     :return: The show information, or None if an error is raised.
     :rtype: string list
     """
     try:
-        return get_show_info(link)
+        return get_show_info(link, s_name, s_num, sngl)
     except:
         return None
 
@@ -372,7 +468,8 @@ def rename_files(get_files_method, new_names, dir):
         os.rename(on, nn)
 
 
-def rename_vid_files(dir, link, e_idxs=None):
+def rename_vid_files(dir, link, 
+                     s_name=None, s_num=None, sngl=False, e_idxs=None):
     """Renames all video files in the directory specified by the `dir` 
     parameter, that are of the supported formats, using the new names scraped 
     from the web page defined by the `link` parameter. If the `e_idxs` 
@@ -381,19 +478,26 @@ def rename_vid_files(dir, link, e_idxs=None):
     
     :param dir: The directory in which to look for video files.
     :param link: The link to the web page which to scrape for new names.
+    :param s_name: The show name (optional, an attempt to scrape it will be 
+        made if not specified).
+    :param s_num: The season number (optional, an attempt to scrape it will be 
+        made if not specified).
+    :param sngl: Denoting that the show only has one season (it's needed since 
+        the Wikipedia page has a different structure then).
     :param e_idxs: The indices of the selected episode names that should be 
         used when renaming.
     """
     print("\n--- RENAMING VIDEO FILES ---")
     
-    link = link if link is not None else try_guess_link(dir)
-    
     if link is None:
-        print("\nError: Failed to guess link to show. "
-              "Please specify '--link' parameter.")
-        return
-        
-    show_info = try_get_show_info(link)
+        link, s_name, s_num = try_guess_link(dir, s_name, s_num, sngl)
+    
+        if link is None:
+            print("\nError: Failed to guess link to show. "
+                  "Please specify '--link' parameter.")
+            return
+    
+    show_info = try_get_show_info(link, s_name, s_num, sngl)
     
     if show_info is None:
         print("\nError: Failed to get show information from link.")
@@ -444,6 +548,22 @@ def link_type(link):
     return link
 
 
+def num_type(num):
+    """Defines the type for the input season number parsed by argparse in the 
+    :func:`get_args` function. The minimum season number is 1.
+    
+    :param num: The number input by the user at command line.
+    :raises argparse.ArgumentTypeError: Raised if the input is not a number 
+        larger than or equal to 1.
+    :return: An integer representing the season number.
+    :rtype: int
+    """
+    x = int(num)
+    if x < 1:
+        raise argparse.ArgumentTypeError("Minimum season number is 1.")
+    return x
+
+
 def get_selected_eps(ep_ranges_str):
     """Parses the comma-separated list of episode ranges and returns a list of 
     integers representing the union of all integers covered by the ranges.
@@ -489,7 +609,8 @@ def rang_type(ep_ranges_str):
 def get_args():
     """Uses the :mod:`argparse` module to parse the command line arguments.
     
-    :return: The parsed input target, directory, link and ranges arguments.
+    :return: The parsed input 'target', 'directory', 'link', 'show', 
+        'season number', 'single' flag and 'ranges' arguments.
     :rtype: list (varied types)
     """
     prog_desc = """Rename a show's video and subtitle files to their correct 
@@ -501,6 +622,17 @@ def get_args():
     link_help = """The URL to the season's Wikipedia page. Only required when 
                    renaming video files. Leave empty to guess based on video 
                    files' names."""
+    show_help = """The name of the show. Only used when renaming video 
+                   files. Leave empty to guess based on video file names. This 
+                   parameter is dependent of the '--num' parameter; provide 
+                   either both or none of them."""
+    num_help  = """The season number. Only used when renaming video 
+                   files. Leave empty to guess based on video file names. This 
+                   parameter is dependent of the '--show' parameter; provide 
+                   either both or none of them."""
+    sngl_help = """Denotes that the show consists of only one season. Needed 
+                   to be able to correctly scrape episode names from the 
+                   Wikipedia page."""
     rang_help = """Which episodes to rename. Ranges are specified as a 
                    comma-separated list (without spaces) of episode numbers, 
                    represented either as single integers or integer intervals 
@@ -513,22 +645,30 @@ def get_args():
                         default="VS", help=tgt_help)
     parser.add_argument("-d", "--dir", default=".", help=dir_help)
     parser.add_argument("-l", "--link", help=link_help, type=link_type)
+    parser.add_argument("-s", "--show", help=show_help)
+    parser.add_argument("-n", "--num", help=num_help, type=num_type)
+    parser.add_argument("-i", "--single", help=sngl_help, action="store_true")
     parser.add_argument("-r", "--ranges", help=rang_help, type=rang_type)
     
     args = parser.parse_args()
-    tgt, dir, link, e_idxs = args.target, args.dir, args.link, args.ranges
+    tgt, dir, link, s_name = args.target, args.dir, args.link, args.show
+    s_num, sngl, e_idxs = args.num, args.single, args.ranges
     
     if not os.path.isdir(dir):
         parser.error("'{}' is not a valid directory.".format(dir))
     
-    return tgt, dir, link, e_idxs
+    if (s_name is None) != (s_num is None):
+        parser.error("Parameters '--show' and '--num' are dependent of each "
+                     "other. Provide either both or none of them.")
+    
+    return tgt, dir, link, s_name, s_num, sngl, e_idxs
 
 
 def main():
-    tgt, dir, link, e_idxs = get_args()
+    tgt, dir, link, s_name, s_num, sngl, e_idxs = get_args()
     
     if tgt in ["V", "VS"]:
-        rename_vid_files(dir, link, e_idxs)
+        rename_vid_files(dir, link, s_name, s_num, sngl, e_idxs)
     
     if tgt in ["S", "VS"]:
         rename_sub_files(dir)
