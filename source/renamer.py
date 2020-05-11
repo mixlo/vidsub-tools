@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+
+# TODO
+# - Wikipedia URLs are case sensitive, e.g. "Under the Dome" (correct) vs. 
+#   Under The Dome (wrong). Add support for this in the capwords function.
+
+
 """
 A module used for renaming video and subtitle files of a specific season of a 
 specified show. Video files are renamed by scraping the Wikipedia page for the 
@@ -585,7 +591,7 @@ def get_selected_eps(ep_ranges_str):
             start, end = er.split("-")
             eps += range(int(start), int(end)+1)
     
-    return list(set([ep-1 for ep in eps]))
+    return sorted(list(set([ep-1 for ep in eps])))
 
 
 def rang_type(ep_ranges_str):
